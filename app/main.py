@@ -12,10 +12,12 @@ from pydantic import BaseModel, Field
 
 from .alignment import GAP_COST, align, align_with_anchors, normalize_anchors
 from .parsers import parse_script, parse_srt
+from .retime import CalibPoint, build_srt, parse_timecode, retime_subtitles
 from .textnorm import normalize_text
 
 MAX_ITEMS = 2000          # 每侧条目数上限，防止 DP 规模过大导致请求过久
 MAX_RAW_BYTES = 2 * 1024 * 1024
+MAX_POINTS = 500          # 重定时校准点数量上限
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
@@ -195,6 +197,84 @@ def api_export_csv(req: AlignRequest):
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": 'attachment; filename="alignment.csv"'
+        },
+    )
+
+
+class CalibPointIn(BaseModel):
+    source: str = Field(description="原时间码，HH:MM:SS,mmm")
+    target: str = Field(description="目标时间码，HH:MM:SS,mmm")
+
+
+class RetimeRequest(BaseModel):
+    srt: str = Field(default="", description="原 SRT 字幕")
+    points: list[CalibPointIn] = Field(
+        default_factory=list,
+        description="按顺序排列的校准点（原时间→目标时间），两列时间均须严格递增",
+    )
+
+
+def _build_retime_rows(srt_text: str, points_in: list[CalibPointIn]):
+    if len(srt_text.encode("utf-8", errors="ignore")) > MAX_RAW_BYTES:
+        raise HTTPException(400, "SRT 超过 2 MB 大小限制")
+    try:
+        subs = parse_srt(srt_text)
+    except ValueError as exc:
+        raise HTTPException(400, f"SRT 解析失败：{exc}") from exc
+    if not subs:
+        raise HTTPException(400, "SRT 内容为空，请粘贴字幕")
+    if len(subs) > MAX_ITEMS:
+        raise HTTPException(
+            400, f"字幕块数超过 {MAX_ITEMS} 的上限，请拆分后再重定时"
+        )
+    if not points_in:
+        raise HTTPException(400, "至少需要一个校准点")
+    if len(points_in) > MAX_POINTS:
+        raise HTTPException(400, f"校准点数量超过 {MAX_POINTS} 的上限")
+
+    points: list[CalibPoint] = []
+    for i, p in enumerate(points_in, start=1):
+        try:
+            points.append(
+                CalibPoint(parse_timecode(p.source), parse_timecode(p.target))
+            )
+        except ValueError as exc:
+            raise HTTPException(400, f"第 {i} 个校准点：{exc}") from exc
+    try:
+        return retime_subtitles(subs, points)
+    except ValueError as exc:
+        raise HTTPException(400, f"重定时结果校验失败：{exc}") from exc
+
+
+@app.post("/api/retime")
+def api_retime(req: RetimeRequest):
+    rows = _build_retime_rows(req.srt, req.points)
+    return {
+        "summary": {"total": len(rows), "points": len(req.points)},
+        "rows": [
+            {
+                "new_index": r.new_index,
+                "index": r.index,
+                "old_start_tc": r.old_start_tc,
+                "old_end_tc": r.old_end_tc,
+                "new_start_tc": r.new_start_tc,
+                "new_end_tc": r.new_end_tc,
+                "text": r.text,
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/api/retime.srt")
+def api_retime_srt(req: RetimeRequest):
+    rows = _build_retime_rows(req.srt, req.points)
+    data = build_srt(rows).encode("utf-8")
+    return Response(
+        content=data,
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="retimed.srt"'
         },
     )
 

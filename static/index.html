@@ -9,10 +9,16 @@
 <body>
 <header class="topbar">
   <h1>字幕校稿对齐</h1>
-  <p class="subtitle">逐行对白稿 × SRT · 归一化字符编辑距离全局单调对齐 · 缺项代价 0.45</p>
+  <p class="subtitle">逐行对白稿 × SRT 全局单调对齐 · SRT 时间轴重定时（校准点分段线性映射）</p>
 </header>
 
 <main>
+  <nav class="tabs">
+    <button type="button" id="tabAlign" class="tab active">字幕校稿对齐</button>
+    <button type="button" id="tabRetime" class="tab">SRT 时间轴重定时</button>
+  </nav>
+
+  <div id="viewAlign">
   <section class="input-grid">
     <div class="pane">
       <div class="pane-head">
@@ -72,8 +78,57 @@
       <tbody id="resultBody"></tbody>
     </table>
   </section>
+  </div><!-- /viewAlign -->
+
+  <div id="viewRetime" class="hidden">
+  <section class="input-grid">
+    <div class="pane">
+      <div class="pane-head">
+        <label for="rtSrt">原 SRT 字幕</label>
+        <button type="button" class="ghost" id="rtSample">填入示例</button>
+      </div>
+      <textarea id="rtSrt" spellcheck="false"
+        placeholder="粘贴标准 SRT&#10;1&#10;00:00:01,000 --> 00:00:02,500&#10;你好，世界！"></textarea>
+    </div>
+    <div class="pane">
+      <div class="pane-head">
+        <label for="rtPoints">校准点（每行一个：原时间 --&gt; 目标时间，两列均须严格递增）</label>
+      </div>
+      <textarea id="rtPoints" spellcheck="false"
+        placeholder="00:00:01,000 --> 00:00:02,000&#10;00:00:07,000 --> 00:00:10,500"></textarea>
+    </div>
+  </section>
+
+  <section class="controls">
+    <button type="button" id="rtRunBtn" class="primary">开始重定时</button>
+    <button type="button" id="rtClearBtn" class="ghost">清空</button>
+    <span id="rtStatus" class="status" role="status"></span>
+  </section>
+
+  <section id="rtSummary" class="summary hidden">
+    <span class="chip chip-match">字幕块 <b id="rtCnt">0</b></span>
+    <span class="chip">校准点 <b id="rtPts">0</b></span>
+    <button type="button" id="rtDownloadBtn" class="ghost">下载 SRT</button>
+  </section>
+
+  <section id="rtResultWrap" class="result-wrap hidden">
+    <table id="rtTable">
+      <thead>
+        <tr>
+          <th class="col-rt-idx">新#</th>
+          <th class="col-rt-idx">原#</th>
+          <th class="col-tc">原时间码</th>
+          <th class="col-tc">新时间码</th>
+          <th>字幕文本</th>
+        </tr>
+      </thead>
+      <tbody id="rtBody"></tbody>
+    </table>
+  </section>
+  </div><!-- /viewRetime -->
 </main>
 
 <script src="/static/app.js"></script>
+<script src="/static/retime.js"></script>
 </body>
 </html>

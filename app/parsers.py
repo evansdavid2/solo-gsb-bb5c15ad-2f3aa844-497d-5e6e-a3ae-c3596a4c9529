@@ -24,6 +24,7 @@ class SrtItem:
     end_ms: int
     start_tc: str
     end_tc: str
+    body_lines: tuple[str, ...] = ()   # 原始字幕正文行（保留换行，供导出使用）
 
 
 def parse_script(text: str) -> list[ScriptItem]:
@@ -40,7 +41,8 @@ def _ms(h: str, m: str, s: str, ms: str) -> int:
     return int(h) * 3600000 + int(m) * 60000 + int(s) * 1000 + int(ms.ljust(3, "0"))
 
 
-def _format_tc(ms: int) -> str:
+def format_tc(ms: int) -> str:
+    """把非负毫秒格式化为 SRT 时间码 HH:MM:SS,mmm。"""
     h, rem = divmod(ms, 3600000)
     m, rem = divmod(rem, 60000)
     s, milli = divmod(rem, 1000)
@@ -86,8 +88,9 @@ def parse_srt(text: str) -> list[SrtItem]:
                 raw_text=" ".join(body_lines).strip(),
                 start_ms=start_ms,
                 end_ms=end_ms,
-                start_tc=_format_tc(start_ms),
-                end_tc=_format_tc(end_ms),
+                start_tc=format_tc(start_ms),
+                end_tc=format_tc(end_ms),
+                body_lines=tuple(body_lines),
             )
         )
     return items
