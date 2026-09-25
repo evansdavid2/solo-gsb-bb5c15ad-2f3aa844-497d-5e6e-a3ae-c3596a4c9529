@@ -282,3 +282,113 @@ def test_no_anchor_keeps_original_shape():
     resp = client.post("/api/export.csv", json={"script": SCRIPT, "srt": SRT})
     header = resp.content.decode("utf-8-sig").splitlines()[0]
     assert "锚点" not in header
+
+
+# ---------- SRT 时间轴重定时 ----------
+
+def _retime(points, srt=SRT):
+    return client.post("/api/retime", json={"srt": srt, "points": points})
+
+
+def test_retime_preview_timecodes_and_text():
+    resp = _retime([
+        {"src": "00:00:01,000", "dst": "00:00:02,000"},
+        {"src": "00:00:15,500", "dst": "00:00:31,000"},
+    ])
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["summary"] == {"blocks": 6, "points": 2}
+    first = data["rows"][0]
+    # 首点命中：1s -> 2s
+    assert first["new_start_tc"] == "00:00:02,000"
+    assert first["start_tc"] == "00:00:01,000"
+    assert first["text"] == "你好世界"
+    # 出点 2.5s 段内：2000 + 1500*29000/14500 = 2000 + 3000 = 5000
+    assert first["new_end_tc"] == "00:00:05,000"
+
+
+def test_retime_accepts_millisecond_integers_and_dot_timecodes():
+    resp = _retime([{"src": 1000, "dst": "00:00:02.000"}])
+    assert resp.status_code == 200
+    assert resp.json()["rows"][0]["new_start_tc"] == "00:00:02,000"
+
+
+def test_retime_single_point_shift():
+    resp = _retime([{"src": "00:00:01,000", "dst": "00:00:11,000"}])
+    assert resp.status_code == 200
+    first = resp.json()["rows"][0]
+    assert first["new_start_tc"] == "00:00:11,000"
+    assert first["new_end_tc"] == "00:00:12,500"
+
+
+def test_retime_missing_points_returns_400():
+    resp = client.post("/api/retime", json={"srt": SRT, "points": []})
+    assert resp.status_code == 400
+    assert "校准点" in resp.json()["detail"]
+
+
+def test_retime_bad_timecode_returns_400():
+    resp = _retime([{"src": "not-a-time", "dst": "00:00:02,000"}])
+    assert resp.status_code == 400
+    assert "校准点" in resp.json()["detail"]
+
+
+def test_retime_non_increasing_points_returns_400():
+    resp = _retime([
+        {"src": "00:00:05,000", "dst": "00:00:06,000"},
+        {"src": "00:00:04,000", "dst": "00:00:10,000"},
+    ])
+    assert resp.status_code == 400
+    assert "严格递增" in resp.json()["detail"]
+
+
+def test_retime_negative_result_returns_400_with_block_no():
+    resp = _retime([{"src": "00:00:05,000", "dst": "00:00:00,000"}])
+    assert resp.status_code == 400
+    assert "块 1" in resp.json()["detail"]
+
+
+def test_retime_srt_export_renumbers_and_preserves_body():
+    srt = "\n".join(
+        [
+            "7",
+            "00:00:01,000 --> 00:00:02,000",
+            "第一行",
+            "第二行",
+            "",
+            "9",
+            "00:00:03,000 --> 00:00:04,000",
+            "另一块",
+            "",
+        ]
+    )
+    resp = client.post(
+        "/api/retime.srt",
+        json={
+            "srt": srt,
+            "points": [{"src": "00:00:01,000", "dst": "00:00:05,000"}],
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/x-subrip")
+    assert "retimed.srt" in resp.headers["content-disposition"]
+    text = resp.content.decode("utf-8")
+    lines = text.splitlines()
+    assert lines[0] == "1"
+    assert lines[1] == "00:00:05,000 --> 00:00:06,000"
+    assert lines[2] == "第一行" and lines[3] == "第二行"
+    assert lines[5] == "2"
+    assert lines[6] == "00:00:07,000 --> 00:00:08,000"
+
+
+def test_retime_export_rejected_when_invalid():
+    # 负时间：导出接口同样拒绝
+    resp = client.post(
+        "/api/retime.srt",
+        json={
+            "srt": SRT,
+            "points": [{"src": "00:00:05,000", "dst": "00:00:00,000"}],
+        },
+    )
+    assert resp.status_code == 400
+    assert "拒绝导出" in resp.json()["detail"]

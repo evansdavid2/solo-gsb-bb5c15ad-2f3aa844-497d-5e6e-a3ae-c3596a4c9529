@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 _TIME_RE = re.compile(
     r"(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})\s*-->\s*"
@@ -24,6 +24,8 @@ class SrtItem:
     end_ms: int
     start_tc: str
     end_tc: str
+    body_lines: list[str] = field(default_factory=list)
+    # 字幕正文原始各行（保留换行），用于重新导出 SRT
 
 
 def parse_script(text: str) -> list[ScriptItem]:
@@ -45,6 +47,27 @@ def _format_tc(ms: int) -> str:
     m, rem = divmod(rem, 60000)
     s, milli = divmod(rem, 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{milli:03d}"
+
+
+# 供重定时等模块复用的公开接口
+_SINGLE_TIME_RE = re.compile(
+    r"(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})"
+)
+
+
+def parse_timecode(tc: str) -> int:
+    """解析单个 ``HH:MM:SS,mmm`` 时间码为毫秒（逗号、句点小数分隔符均可）。"""
+    match = _SINGLE_TIME_RE.fullmatch(tc.strip())
+    if not match:
+        raise ValueError(f"无法识别的时间码：{tc!r}")
+    return _ms(*match.groups())
+
+
+def format_timecode(ms: int) -> str:
+    """毫秒格式化为 ``HH:MM:SS,mmm``；负值前加 ``-``。"""
+    if ms < 0:
+        return "-" + _format_tc(-ms)
+    return _format_tc(ms)
 
 
 def parse_srt(text: str) -> list[SrtItem]:
@@ -88,6 +111,7 @@ def parse_srt(text: str) -> list[SrtItem]:
                 end_ms=end_ms,
                 start_tc=_format_tc(start_ms),
                 end_tc=_format_tc(end_ms),
+                body_lines=body_lines,
             )
         )
     return items

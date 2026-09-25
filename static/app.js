@@ -225,3 +225,191 @@ async function downloadCsv() {
 
 els.alignBtn.addEventListener("click", align);
 els.downloadBtn.addEventListener("click", downloadCsv);
+
+/* ===================== SRT 时间轴重定时 ===================== */
+
+const rtEls = {
+  srt: $("rtSrt"),
+  points: $("rtPoints"),
+  runBtn: $("rtRunBtn"),
+  clearBtn: $("rtClearBtn"),
+  downloadBtn: $("rtDownloadBtn"),
+  status: $("rtStatus"),
+  resultWrap: $("rtResultWrap"),
+  body: $("rtResultBody"),
+};
+
+// 示例：2 个校准点的分段线性映射（首块、末块还会沿最近区段斜率外推）
+const RT_SAMPLE_SRT = [
+  "1",
+  "00:00:00,500 --> 00:00:02,000",
+  "片头字幕在第一点之前，按前段斜率外推",
+  "",
+  "2",
+  "00:00:04,000 --> 00:00:06,000",
+  "第二句对白",
+  "",
+  "3",
+  "00:00:30,000 --> 00:00:33,000",
+  "三十秒处的字幕",
+  "",
+  "4",
+  "00:01:02,000 --> 00:01:05,000",
+  "片尾字幕在最后一点之后，按末段斜率外推",
+  "",
+].join("\n");
+
+const RT_SAMPLE_POINTS = [
+  "00:00:01,000 → 00:00:02,000",
+  "00:01:00,000 → 00:01:30,000",
+].join("\n");
+
+$("rtSampleSrt").addEventListener("click", () => {
+  rtEls.srt.value = RT_SAMPLE_SRT;
+});
+$("rtSamplePoints").addEventListener("click", () => {
+  rtEls.points.value = RT_SAMPLE_POINTS;
+});
+
+// 标签页切换
+$("tabAlign").addEventListener("click", () => switchTab("align"));
+$("tabRetime").addEventListener("click", () => switchTab("retime"));
+
+function switchTab(name) {
+  const isAlign = name === "align";
+  $("tabAlign").classList.toggle("active", isAlign);
+  $("tabRetime").classList.toggle("active", !isAlign);
+  $("viewAlign").classList.toggle("hidden", !isAlign);
+  $("viewRetime").classList.toggle("hidden", isAlign);
+}
+
+function rtSetStatus(msg, isError) {
+  rtEls.status.textContent = msg;
+  rtEls.status.classList.toggle("error", !!isError);
+}
+
+// HH:MM:SS,mmm / HH:MM:SS.mmm
+const TC_RE = /\d{1,2}:\d{2}:\d{2}[.,]\d{1,3}/g;
+
+// 解析校准点文本：每行须恰好包含两个时间码（原时间、目标时间），顺序严格递增由后端校验
+function parseRetimePoints(text) {
+  const points = [];
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const matches = line.match(TC_RE);
+    if (!matches || matches.length !== 2) {
+      throw new Error(
+        `第 ${i + 1} 行校准点无效：每行需要恰好两个时间码，如 00:00:01,000 → 00:00:02,000`
+      );
+    }
+    points.push({ src: matches[0], dst: matches[1] });
+  }
+  if (!points.length) throw new Error("请至少填写一个校准点");
+  return points;
+}
+
+let rtLastRequest = null;
+
+function renderRetime(rows) {
+  const frag = document.createDocumentFragment();
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    const startChanged = r.start_tc !== r.new_start_tc;
+    const endChanged = r.end_tc !== r.new_end_tc;
+    tr.innerHTML = `
+      <td class="cell-idx">${r.index}</td>
+      <td class="cell-tc">${escapeHtml(r.start_tc)} → ${escapeHtml(r.end_tc)}</td>
+      <td class="cell-arrow">⇒</td>
+      <td class="cell-tc">
+        <span class="${startChanged ? "tc-new" : ""}">${escapeHtml(r.new_start_tc)}</span> →
+        <span class="${endChanged ? "tc-new" : ""}">${escapeHtml(r.new_end_tc)}</span>
+      </td>
+      <td class="cell-text">${escapeHtml(r.text)}</td>`;
+    frag.appendChild(tr);
+  }
+  rtEls.body.replaceChildren(frag);
+  rtEls.resultWrap.classList.remove("hidden");
+}
+
+async function runRetime() {
+  let points;
+  try {
+    points = parseRetimePoints(rtEls.points.value);
+  } catch (e) {
+    rtSetStatus(e.message, true);
+    return;
+  }
+  rtLastRequest = { srt: rtEls.srt.value, points };
+
+  rtEls.runBtn.disabled = true;
+  rtSetStatus("重定时计算中……", false);
+  try {
+    const resp = await fetch("/api/retime", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(rtLastRequest),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: `请求失败（${resp.status}）` }));
+      throw new Error(err.detail || `请求失败（${resp.status}）`);
+    }
+    const data = await resp.json();
+    renderRetime(data.rows);
+    rtEls.downloadBtn.disabled = false;
+    rtSetStatus(
+      `完成：${data.summary.blocks} 块字幕，使用 ${data.summary.points} 个校准点`,
+      false
+    );
+  } catch (e) {
+    rtEls.resultWrap.classList.add("hidden");
+    rtEls.downloadBtn.disabled = true;
+    rtSetStatus(e.message, true);
+  } finally {
+    rtEls.runBtn.disabled = false;
+  }
+}
+
+async function downloadRetimedSrt() {
+  if (!rtLastRequest || rtEls.downloadBtn.disabled) {
+    rtSetStatus("请先生成有效预览", true);
+    return;
+  }
+  rtEls.downloadBtn.disabled = true;
+  try {
+    const resp = await fetch("/api/retime.srt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(rtLastRequest),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: "下载失败" }));
+      throw new Error(err.detail || "下载失败");
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "retimed.srt";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    rtSetStatus(e.message, true);
+  } finally {
+    rtEls.downloadBtn.disabled = false;
+  }
+}
+
+rtEls.runBtn.addEventListener("click", runRetime);
+rtEls.downloadBtn.addEventListener("click", downloadRetimedSrt);
+rtEls.clearBtn.addEventListener("click", () => {
+  rtEls.srt.value = "";
+  rtEls.points.value = "";
+  rtLastRequest = null;
+  rtEls.resultWrap.classList.add("hidden");
+  rtEls.downloadBtn.disabled = true;
+  rtSetStatus("", false);
+});

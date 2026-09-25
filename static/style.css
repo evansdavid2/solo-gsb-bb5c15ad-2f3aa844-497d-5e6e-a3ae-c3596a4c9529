@@ -192,6 +192,33 @@ tr.row-anchor td:first-child { border-left: 4px solid var(--anchor-border); }
 
 .hidden { display: none; }
 
+/* ---------- 标签页 ---------- */
+.tabs { display: flex; gap: 8px; margin-top: 14px; }
+.tab {
+  cursor: pointer;
+  padding: 7px 18px;
+  border: 1px solid var(--line);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: #f4f6f8;
+  color: var(--muted);
+  font-size: 14px;
+}
+.tab.active { background: #fff; color: var(--brand); font-weight: 600; }
+
+/* ---------- SRT 重定时 ---------- */
+.points-area { min-height: 240px; }
+.col-rt-idx { width: 48px; text-align: right; color: var(--muted); }
+.col-rt-tc {
+  width: 260px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  white-space: nowrap;
+}
+.col-rt-arrow { width: 32px; text-align: center; color: var(--muted); }
+.col-rt-text { line-height: 1.55; }
+td.cell-arrow { text-align: center; color: var(--muted); }
+.tc-new { color: var(--brand); font-weight: 600; }
+
 @media (max-width: 860px) {
   .input-grid { grid-template-columns: 1fr; }
   textarea { min-height: 160px; }

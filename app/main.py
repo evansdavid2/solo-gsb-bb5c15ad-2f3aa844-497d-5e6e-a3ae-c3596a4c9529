@@ -11,7 +11,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .alignment import GAP_COST, align, align_with_anchors, normalize_anchors
-from .parsers import parse_script, parse_srt
+from .parsers import parse_script, parse_srt, parse_timecode
+from .retime import render_srt, retime_srt
 from .textnorm import normalize_text
 
 MAX_ITEMS = 2000          # 每侧条目数上限，防止 DP 规模过大导致请求过久
@@ -195,6 +196,88 @@ def api_export_csv(req: AlignRequest):
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": 'attachment; filename="alignment.csv"'
+        },
+    )
+
+
+# ---------- SRT 时间轴重定时 ----------
+
+
+class RetimePoint(BaseModel):
+    src: int | str = Field(
+        description="校准点的原时间：HH:MM:SS,mmm 时间码字符串或毫秒整数"
+    )
+    dst: int | str = Field(
+        description="校准点的目标时间：HH:MM:SS,mmm 时间码字符串或毫秒整数"
+    )
+
+
+class RetimeRequest(BaseModel):
+    srt: str = Field(default="", description="原 SRT 字幕")
+    points: list[RetimePoint] = Field(
+        default_factory=list, description="按顺序排列的 原时间→目标时间 校准点"
+    )
+
+
+def _build_retime(req: RetimeRequest):
+    if len(req.srt.encode("utf-8", errors="ignore")) > MAX_RAW_BYTES:
+        raise HTTPException(400, "SRT 超过 2 MB 大小限制")
+    if not req.points:
+        raise HTTPException(400, "至少需要一个「原时间 → 目标时间」校准点")
+
+    ms_points: list[tuple[int, int]] = []
+    for i, p in enumerate(req.points, start=1):
+        try:
+            src_ms = p.src if isinstance(p.src, int) else parse_timecode(p.src)
+            dst_ms = p.dst if isinstance(p.dst, int) else parse_timecode(p.dst)
+        except ValueError as exc:
+            raise HTTPException(400, f"第 {i} 个校准点无效：{exc}") from exc
+        ms_points.append((src_ms, dst_ms))
+
+    try:
+        subs = parse_srt(req.srt)
+    except ValueError as exc:
+        raise HTTPException(400, f"SRT 解析失败：{exc}") from exc
+    if not subs:
+        raise HTTPException(400, "SRT 内容为空，请先粘贴字幕")
+    if len(subs) > MAX_ITEMS:
+        raise HTTPException(400, f"字幕块数超过 {MAX_ITEMS} 块的上限，请拆分后再重定时")
+
+    try:
+        rows = retime_srt(subs, ms_points)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return subs, rows
+
+
+@app.post("/api/retime")
+def api_retime(req: RetimeRequest):
+    _, rows = _build_retime(req)
+    return {
+        "summary": {"blocks": len(rows), "points": len(req.points)},
+        "rows": [
+            {
+                "index": r["index"],
+                "text": r["text"],
+                "start_tc": r["start_tc"],
+                "end_tc": r["end_tc"],
+                "new_start_tc": r["new_start_tc"],
+                "new_end_tc": r["new_end_tc"],
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/api/retime.srt")
+def api_retime_srt(req: RetimeRequest):
+    subs, rows = _build_retime(req)
+    data = render_srt(subs, rows).encode("utf-8")
+    return Response(
+        content=data,
+        media_type="application/x-subrip; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="retimed.srt"'
         },
     )
 
